@@ -11,22 +11,25 @@ logger = logging.getLogger(__name__)
 # Get environment variables
 BOT_TOKEN = os.getenv('BOT_TOKEN')  # Telegram bot token
 CHANNEL_ID = os.getenv('CHANNEL_ID')  # Telegram channel ID
+CMC_API_KEY = os.getenv('CMC_API_KEY')  # CoinMarketCap API key
 INITIAL_PX_PRICE = float(os.getenv('INITIAL_PX_PRICE', 0.30))  # Initial price of $PX
-COIN_IDS = {
-    "PX": "not-pixel",  # CoinGecko ID for $PX
-    "TON": "the-open-network"  # CoinGecko ID for $TON
-}
 
-# Function to fetch the price of a cryptocurrency using CoinGecko API
-def fetch_crypto_price(coin_id):
-    url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd"
+# CoinMarketCap symbols for the cryptocurrencies
+COIN_SYMBOLS = ["PX", "TON"]
+
+# Function to fetch the price of a cryptocurrency using CoinMarketCap API
+def fetch_crypto_price(symbol):
+    url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
+    headers = {"X-CMC_PRO_API_KEY": CMC_API_KEY}
+    params = {"symbol": symbol, "convert": "USD"}
+
     try:
-        response = requests.get(url, timeout=10)
+        response = requests.get(url, headers=headers, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
-        return data[coin_id]["usd"]
+        return data["data"][symbol]["quote"]["USD"]["price"]
     except requests.exceptions.RequestException as e:
-        logger.error(f"Error fetching {coin_id} price: {e}")
+        logger.error(f"Error fetching {symbol} price: {e}")
         return None
 
 # Function to calculate percentage change
@@ -70,7 +73,7 @@ def wait_until_last_second():
 
 # Main loop to send the price every minute
 def main():
-    previous_prices = {coin: None for coin in COIN_IDS}  # Track previous prices
+    previous_prices = {coin: None for coin in COIN_SYMBOLS}  # Track previous prices
     last_sent_message = None  # To prevent duplicate messages
 
     while True:
@@ -78,24 +81,24 @@ def main():
 
         # Fetch prices
         prices = {}
-        for coin, coin_id in COIN_IDS.items():
-            prices[coin] = fetch_crypto_price(coin_id)
+        for symbol in COIN_SYMBOLS:
+            prices[symbol] = fetch_crypto_price(symbol)
 
         if all(prices.values()):  # Ensure all prices were fetched successfully
             # Calculate percentage changes
             changes = {}
-            for coin, current_price in prices.items():
-                previous_price = previous_prices[coin]
-                changes[coin] = calculate_percentage_change(current_price, previous_price)
+            for symbol, current_price in prices.items():
+                previous_price = previous_prices[symbol]
+                changes[symbol] = calculate_percentage_change(current_price, previous_price)
 
             # Prepare the message
             message_lines = []
-            for coin, current_price in prices.items():
-                if coin == "PX":
+            for symbol, current_price in prices.items():
+                if symbol == "PX":
                     loss_percentage = calculate_percentage_change(current_price, INITIAL_PX_PRICE)
-                    message_lines.append(f"$PX {current_price:.4f}$ | {loss_percentage:.2f}% {get_emoji_indicator(changes[coin])}")
+                    message_lines.append(f"$PX {current_price:.4f}$ | {loss_percentage:.2f}% {get_emoji_indicator(changes[symbol])}")
                 else:
-                    message_lines.append(f"$TON {current_price:.2f}$ {get_emoji_indicator(changes[coin])}")
+                    message_lines.append(f"$TON {current_price:.2f}$ {get_emoji_indicator(changes[symbol])}")
 
             message = "\n\n".join(message_lines)
 
