@@ -1,98 +1,120 @@
 import os
 import requests
+import re
+import json
 import time
-from datetime import datetime, timedelta
+import telebot
 
 # Get environment variables
 BOT_TOKEN = os.getenv('BOT_TOKEN')  # Your bot token
 CHANNEL_ID = os.getenv('CHANNEL_ID')  # Your channel ID
-CMC_API_KEY = os.getenv('CMC_API_KEY')  # CoinMarketCap API key
 INITIAL_PX_PRICE = float(os.getenv('INITIAL_PX_PRICE', 0.30))  # Initial price of $PX
 
-# Validate API key
-if not CMC_API_KEY:
-    raise ValueError("CMC_API_KEY environment variable is missing!")
+bot = telebot.TeleBot(BOT_TOKEN)
+chat_id = CHANNEL_ID
+previous_price = INITIAL_PX_PRICE
 
-# Function to fetch the price of a cryptocurrency using CoinMarketCap API
-def fetch_crypto_price(symbol):
-    url = 'https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest'
-    headers = {
-        'Accepts': 'application/json',
-        'X-CMC_PRO_API_KEY': CMC_API_KEY
-    }
-    params = {
-        'symbol': symbol  # Fetch price by symbol (e.g., PX, TON)
-    }
-    response = requests.get(url, headers=headers, params=params)
-    if response.status_code == 200:
-        data = response.json()
-        return data['data'][symbol]['quote']['USD']['price']
+def calculate_loss_percentage(initial_price, current_price):
+    loss = initial_price - current_price
+    loss_percentage = (loss / initial_price) * 100
+    return loss_percentage
+
+def format_price(price, coin_name):
+    if coin_name == "px": 
+        return round(price, 4) 
+    elif coin_name == "ton": 
+        return round(price, 2) 
     else:
-        print(f"Error fetching {symbol} price: {response.status_code} - {response.text}")
-        return None
+        return int(price)  
 
-# Function to calculate percentage change
-def calculate_percentage_change(current_price, initial_price):
-    return ((current_price - initial_price) / initial_price) * 100
+while True:
+    s = requests.get("https://coinmarketcap.com/", timeout=10)
+    px = requests.get("https://coinmarketcap.com/currencies/not-pixel/", timeout=10)
+    ton = requests.get("https://coinmarketcap.com/currencies/toncoin/", timeout=10)
 
-# Function to send message to the channel
-def send_message_to_channel(message):
-    url = f'https://api.telegram.org/bot{BOT_TOKEN}/sendMessage'
-    payload = {
-        'chat_id': CHANNEL_ID,
-        'text': message
-    }
-    response = requests.post(url, json=payload)
-    return response.json()
+    if s.status_code != 200 or px.status_code != 200 or ton.status_code != 200:
+        print("Failed to retrieve data")
+        time.sleep(60)
+        continue
 
-# Function to wait until the next round minute
-def wait_until_next_minute():
-    now = datetime.now()
-    next_minute = (now + timedelta(minutes=1)).replace(second=0, microsecond=0)
-    wait_time = (next_minute - now).total_seconds()
-    time.sleep(wait_time)
+    data = s.text
+    cd = px.text
+    cd2 = ton.text
 
-# Main loop to send the price every minute
-def main():
-    previous_px_price = None  # Track previous price for $PX
-    previous_ton_price = None  # Track previous price for $TON
+    match = re.search(r'"highlightsData":\{"trendingList":(\[.*?\])', data)
 
-    # Wait until the next round minute to start
-    wait_until_next_minute()
+    if match:
+        try:
+            trending_list = json.loads(match.group(1))
+            for coin in trending_list:
+                name = coin.get("name", "Unknown Coin").replace(" ", "_").lower()  #
+                price = coin.get("priceChange", {}).get("price", "N/A")
+                globals()[name] = price  
+        except json.JSONDecodeError:
+            print("Error parsing trending list JSON")
+    else:
+        print("Highlights data not found.")
 
-    while True:
-        # Fetch prices
-        px_price = fetch_crypto_price('PX')
-        ton_price = fetch_crypto_price('TON')
+    match = re.search(r'"statistics":(\{.*?\})', cd2)
+    name_match = re.search(r'"name":"(.*?)"', cd2)
 
-        if px_price is not None and ton_price is not None:
-            # Calculate percentage loss for $PX
-            px_loss_percentage = calculate_percentage_change(px_price, INITIAL_PX_PRICE)
+    if match:
+        try:
+            statistics_json = match.group(1)
+            statistics_dict = json.loads(statistics_json)
+            price = statistics_dict.get("price", "N/A")
+            coin_name = name_match.group(1).replace(" ", "_").lower() if name_match else "unknown_coin"  
+            globals()[coin_name] = price
+            x = price
 
-            # Prepare the message
-            message = (
-                f"$PX {px_price:.4f}$ | {px_loss_percentage:.2f}%\n\n"
-                f"$TON {ton_price:.2f}$"
-            )
+        except json.JSONDecodeError:
+            print("Error parsing statistics JSON")
 
-            # Send the message
-            send_message_to_channel(message)
+    match = re.search(r'"statistics":(\{.*?\})', cd)
+    name_match = re.search(r'"name":"(.*?)"', cd)
 
-            # Check for price change alert (5% threshold)
-            if previous_px_price is not None:
-                px_price_change = calculate_percentage_change(px_price, previous_px_price)
-                if abs(px_price_change) >= 5:
-                    alert_message = f"🚨 $PX Price Alert: {px_price_change:.2f}%!"
-                    send_message_to_channel(alert_message)
+    if match:
+        try:
+            statistics_json = match.group(1)
+            statistics_dict = json.loads(statistics_json)
+            price = statistics_dict.get("price", "N/A")
+            coin_name = name_match.group(1).replace(" ", "_").lower() if name_match else "unknown_coin"  
+            globals()[coin_name] = price 
 
-            # Update previous prices
-            previous_px_price = px_price
-            previous_ton_price = ton_price
-        else:
-            print("Failed to fetch prices")
+            if price != "N/A" and price != 0:
+                try:
+                    loss_percentage = ((previous_price - float(price)) / previous_price) * 100
+                    print(f"{coin_name.capitalize()} - Loss Percentage: {loss_percentage:.2f}%")
+                except ValueError:
+                    print(f"Invalid price for {coin_name}")
+            
+        except json.JSONDecodeError:
+            print("Error parsing statistics JSON")
+    else:
+        print("Statistics data not found.")
 
-        # Wait until the next round minute
-        wait_until_next_minute()
+    try:
+        initial_price = INITIAL_PX_PRICE
+        current_price = coinmarketcap
+        loss_percentage = calculate_loss_percentage(initial_price, current_price)
 
-if __name__ == "__main__":
-    main()
+        formatted_bitcoin = format_price(float(bitcoin), "bitcoin")
+        formatted_ethereum = format_price(float(ethereum), "ethereum")
+        formatted_solana = format_price(float(solana), "solana")
+        formatted_xrp = format_price(float(xrp), "xrp")
+        formatted_cardano = format_price(float(cardano), "cardano")
+        formatted_px = format_price(float(coinmarketcap), "px")
+        formatted_ton = format_price(float(x), "ton")  
+
+        message_text = f"""
+$PX {formatted_px}$  |  -{loss_percentage:.2f}%
+
+$TON {formatted_ton}$ 
+"""
+
+        sent = bot.send_message(chat_id=chat_id, text=str(message_text), parse_mode="Markdown")
+
+    except NameError:
+        print("One or more coin prices not found yet.")
+
+    time.sleep(60)
