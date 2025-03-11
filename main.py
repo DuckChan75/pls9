@@ -21,11 +21,11 @@ def calculate_loss_percentage(initial_price, current_price):
 
 def format_price(price, coin_name):
     if coin_name == "px": 
-        return round(price, 4) 
+        return round(price, 4)  # Round to 4 decimal places for $PX
     elif coin_name == "ton": 
-        return round(price, 2) 
+        return round(price, 2)  # Round to 2 decimal places for $TON
     else:
-        return int(price)  
+        return int(price)  # Default to integer for other coins
 
 while True:
     s = requests.get("https://coinmarketcap.com/", timeout=10)
@@ -95,26 +95,25 @@ while True:
 
     try:
         initial_price = INITIAL_PX_PRICE
-        current_price = coinmarketcap
+        current_price = float(coinmarketcap)  # Ensure this variable is defined
         loss_percentage = calculate_loss_percentage(initial_price, current_price)
 
-        formatted_bitcoin = format_price(float(bitcoin), "bitcoin")
-        formatted_ethereum = format_price(float(ethereum), "ethereum")
-        formatted_solana = format_price(float(solana), "solana")
-        formatted_xrp = format_price(float(xrp), "xrp")
-        formatted_cardano = format_price(float(cardano), "cardano")
-        formatted_px = format_price(float(coinmarketcap), "px")
+        formatted_px = format_price(current_price, "px")
         formatted_ton = format_price(float(x), "ton")  
 
+        # Format the message with proper spacing and digits
         message_text = f"""
-$PX {formatted_px}$  |  -{loss_percentage:.2f}%
+$PX {formatted_px}$ | -{loss_percentage:.2f}%
 
-$TON {formatted_ton}$ 
+$TON {formatted_ton}$
 """
 
-        sent = bot.send_message(chat_id=chat_id, text=str(message_text), parse_mode="Markdown")
+        # Send the message to the Telegram channel
+        bot.send_message(chat_id=chat_id, text=message_text, parse_mode="Markdown")
 
     except NameError:
         print("One or more coin prices not found yet.")
+    except Exception as e:
+        print(f"An error occurred: {e}")
 
-    time.sleep(60)
+    time.sleep(60)  # Wait for 60 seconds before the next iteration
