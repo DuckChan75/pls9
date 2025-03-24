@@ -1,134 +1,80 @@
 import os
 import requests
 import re
-import json
 import time
 import telebot
 from datetime import datetime
 
-# Get environment variables
-BOT_TOKEN = os.getenv('BOT_TOKEN')  # Your bot token
+# Configuration
+BOT_TOKEN = os.getenv('BOT_TOKEN')  # Your Telegram bot token
 CHANNEL_ID = os.getenv('CHANNEL_ID')  # Your channel ID
-INITIAL_PX_PRICE = float(os.getenv('INITIAL_PX_PRICE', 0.30))  # Initial price of $PX
-SECONDARY_PX_PRICE = float(os.getenv('SECONDARY_PX_PRICE', 0.20))  # Secondary price of $PX
+INITIAL_PX_PRICE = 0.30  # Starting price for % calculations
+SECONDARY_PX_PRICE = 0.20  # Secondary reference price
 
 bot = telebot.TeleBot(BOT_TOKEN)
-chat_id = CHANNEL_ID
-previous_price = INITIAL_PX_PRICE
 
-def calculate_loss_percentage(initial_price, current_price):
-    loss = initial_price - current_price
-    loss_percentage = (loss / initial_price) * 100
-    return loss_percentage
+def format_price(price, coin):
+    """Formats price with correct decimal places"""
+    return f"{price:.4f}" if coin == "px" else f"{price:.2f}"
 
-def format_price(price, coin_name):
-    if coin_name == "px": 
-        return f"{price:.4f}"  # Format to 4 decimal places for $PX
-    elif coin_name == "ton": 
-        return f"{price:.2f}"  # Format to 2 decimal places for $TON
-    else:
-        return str(int(price))  # Default to integer for other coins
-
-def send_message_at_53rd_second():
+def sync_to_53rd_second():
+    """Aligns execution with the next :53 second mark"""
     now = datetime.now()
     current_second = now.second
     if current_second < 53:
-        delay = 53 - current_second  # Wait until the 53rd second
+        time.sleep(53 - current_second)
     else:
-        delay = 60 - current_second + 53  # Wait until the 53rd second of the next minute
-    time.sleep(delay)
+        time.sleep(60 - current_second + 53)
 
-while True:
-    # Fetch data
-    s = requests.get("https://coinmarketcap.com/", timeout=10)
-    px = requests.get("https://coinmarketcap.com/currencies/not-pixel/", timeout=10)
-    ton = requests.get("https://coinmarketcap.com/currencies/toncoin/", timeout=10)
-
-    if s.status_code != 200 or px.status_code != 200 or ton.status_code != 200:
-        print("Failed to retrieve data")
-        time.sleep(60)
-        continue
-
-    data = s.text
-    cd = px.text
-    cd2 = ton.text
-
-    # Parse trending list
-    match = re.search(r'"highlightsData":\{"trendingList":(\[.*?\])', data)
-    if match:
-        try:
-            trending_list = json.loads(match.group(1))
-            for coin in trending_list:
-                name = coin.get("name", "Unknown Coin").replace(" ", "_").lower()
-                price = coin.get("priceChange", {}).get("price", "N/A")
-                globals()[name] = price  
-        except json.JSONDecodeError:
-            print("Error parsing trending list JSON")
-    else:
-        print("Highlights data not found.")
-
-    # Parse TON statistics
-    match = re.search(r'"statistics":(\{.*?\})', cd2)
-    name_match = re.search(r'"name":"(.*?)"', cd2)
-    if match:
-        try:
-            statistics_json = match.group(1)
-            statistics_dict = json.loads(statistics_json)
-            price = statistics_dict.get("price", "N/A")
-            coin_name = name_match.group(1).replace(" ", "_").lower() if name_match else "unknown_coin"  
-            globals()[coin_name] = price
-            x = price
-        except json.JSONDecodeError:
-            print("Error parsing statistics JSON")
-
-    # Parse PX statistics
-    match = re.search(r'"statistics":(\{.*?\})', cd)
-    name_match = re.search(r'"name":"(.*?)"', cd)
-    if match:
-        try:
-            statistics_json = match.group(1)
-            statistics_dict = json.loads(statistics_json)
-            price = statistics_dict.get("price", "N/A")
-            coin_name = name_match.group(1).replace(" ", "_").lower() if name_match else "unknown_coin"  
-            globals()[coin_name] = price 
-
-            if price != "N/A" and price != 0:
-                try:
-                    loss_percentage_initial = calculate_loss_percentage(INITIAL_PX_PRICE, float(price))
-                    loss_percentage_secondary = calculate_loss_percentage(SECONDARY_PX_PRICE, float(price))
-                except ValueError:
-                    print(f"Invalid price for {coin_name}")
-        except json.JSONDecodeError:
-            print("Error parsing statistics JSON")
-    else:
-        print("Statistics data not found.")
-
+def fetch_prices():
+    """Gets current prices from CoinMarketCap"""
     try:
-        initial_price = INITIAL_PX_PRICE
-        current_price = float(coinmarketcap)  # Ensure this variable is defined
-        loss_percentage_initial = calculate_loss_percentage(initial_price, current_price)
-        loss_percentage_secondary = calculate_loss_percentage(SECONDARY_PX_PRICE, current_price)
+        # Fetch PX price
+        px_response = requests.get(
+            "https://coinmarketcap.com/currencies/not-pixel/", 
+            timeout=10
+        )
+        px_price = float(re.search(r'"price":"([\d.]+)"', px_response.text).group(1))
+        
+        # Fetch TON price
+        ton_response = requests.get(
+            "https://coinmarketcap.com/currencies/toncoin/", 
+            timeout=10
+        )
+        ton_price = float(re.search(r'"price":"([\d.]+)"', ton_response.text).group(1))
+        
+        return px_price, ton_price
+    except Exception as e:
+        print(f"Error fetching prices: {e}")
+        return None, None
 
-        formatted_px = format_price(current_price, "px")
-        formatted_ton = format_price(float(x), "ton")  
+def calculate_percentage(initial, current):
+    """Calculates percentage change"""
+    return ((current - initial) / initial) * 100
 
-        # Format the message with proper spacing and digits
-        message_text = f"""
-$PX {formatted_px}$ 
-From 0.3$ = -{loss_percentage_initial:.2f}% / From 0.2$ = -{loss_percentage_secondary:.2f}%
+def create_message(px_price, ton_price):
+    """Generates the formatted message"""
+    high_loss = calculate_percentage(INITIAL_PX_PRICE, px_price)
+    mid_loss = calculate_percentage(SECONDARY_PX_PRICE, px_price)
+    
+    return f"""
+$PX *{format_price(px_price, 'px')}$*
+From 0.3$ = {high_loss:.2f}%
+From 0.2$ = {mid_loss:.2f}%
 
-$TON {formatted_ton}$
+$TON *{format_price(ton_price, 'ton')}$*
 """
 
-        # Send the message at the 53rd second of the minute
-        send_message_at_53rd_second()
+def main():
+    while True:
+        sync_to_53rd_second()  # Wait until :53
+        
+        px, ton = fetch_prices()
+        if px and ton:  # Only proceed if we got both prices
+            message = create_message(px, ton)
+            bot.send_message(CHANNEL_ID, message, parse_mode="Markdown")
+        
+        time.sleep(1)  # Brief pause before next cycle
 
-        # Send the message to the Telegram channel
-        bot.send_message(chat_id=chat_id, text=message_text, parse_mode="Markdown")
-
-    except NameError:
-        print("One or more coin prices not found yet.")
-    except Exception as e:
-        print(f"An error occurred: {e}")
-
-    time.sleep(1)  # Wait for 1 second before the next iteration
+if __name__ == "__main__":
+    main()
