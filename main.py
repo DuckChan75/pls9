@@ -14,7 +14,6 @@ SECONDARY_PX_PRICE = float(os.getenv('SECONDARY_PX_PRICE', 0.20))  # Secondary p
 
 bot = telebot.TeleBot(BOT_TOKEN)
 chat_id = CHANNEL_ID
-previous_price = INITIAL_PX_PRICE
 
 def calculate_loss_percentage(initial_price, current_price):
     loss = initial_price - current_price
@@ -27,108 +26,68 @@ def format_price(price, coin_name):
     elif coin_name == "ton": 
         return f"{price:.2f}"  # Format to 2 decimal places for $TON
     else:
-        return str(int(price))  # Default to integer for other coins
+        return str(price)  # Default format
 
 def send_message_at_53rd_second():
     now = datetime.now()
     current_second = now.second
     if current_second < 53:
-        delay = 53 - current_second  # Wait until the 53rd second
+        delay = 53 - current_second
     else:
-        delay = 60 - current_second + 53  # Wait until the 53rd second of the next minute
+        delay = 60 - current_second + 53
     time.sleep(delay)
 
+def get_coin_price(html_content):
+    """Extract price from the statistics JSON in the HTML content"""
+    match = re.search(r'"statistics":(\{.*?\})', html_content)
+    if match:
+        try:
+            statistics = json.loads(match.group(1))
+            return float(statistics.get("price", 0))
+        except (json.JSONDecodeError, ValueError):
+            pass
+    return None
+
 while True:
-    # Fetch data
-    s = requests.get("https://coinmarketcap.com/", timeout=10)
-    px = requests.get("https://coinmarketcap.com/currencies/not-pixel/", timeout=10)
-    ton = requests.get("https://coinmarketcap.com/currencies/toncoin/", timeout=10)
-
-    if s.status_code != 200 or px.status_code != 200 or ton.status_code != 200:
-        print("Failed to retrieve data")
-        time.sleep(60)
-        continue
-
-    data = s.text
-    cd = px.text
-    cd2 = ton.text
-
-    # Parse trending list
-    match = re.search(r'"highlightsData":\{"trendingList":(\[.*?\])', data)
-    if match:
-        try:
-            trending_list = json.loads(match.group(1))
-            for coin in trending_list:
-                name = coin.get("name", "Unknown Coin").replace(" ", "_").lower()
-                price = coin.get("priceChange", {}).get("price", "N/A")
-                globals()[name] = price  
-        except json.JSONDecodeError:
-            print("Error parsing trending list JSON")
-    else:
-        print("Highlights data not found.")
-
-    # Parse TON statistics
-    match = re.search(r'"statistics":(\{.*?\})', cd2)
-    name_match = re.search(r'"name":"(.*?)"', cd2)
-    if match:
-        try:
-            statistics_json = match.group(1)
-            statistics_dict = json.loads(statistics_json)
-            price = statistics_dict.get("price", "N/A")
-            coin_name = name_match.group(1).replace(" ", "_").lower() if name_match else "unknown_coin"  
-            globals()[coin_name] = price
-            x = price
-        except json.JSONDecodeError:
-            print("Error parsing statistics JSON")
-
-    # Parse PX statistics
-    match = re.search(r'"statistics":(\{.*?\})', cd)
-    name_match = re.search(r'"name":"(.*?)"', cd)
-    if match:
-        try:
-            statistics_json = match.group(1)
-            statistics_dict = json.loads(statistics_json)
-            price = statistics_dict.get("price", "N/A")
-            coin_name = name_match.group(1).replace(" ", "_").lower() if name_match else "unknown_coin"  
-            globals()[coin_name] = price 
-
-            if price != "N/A" and price != 0:
-                try:
-                    loss_percentage_initial = calculate_loss_percentage(INITIAL_PX_PRICE, float(price))
-                    loss_percentage_secondary = calculate_loss_percentage(SECONDARY_PX_PRICE, float(price))
-                except ValueError:
-                    print(f"Invalid price for {coin_name}")
-        except json.JSONDecodeError:
-            print("Error parsing statistics JSON")
-    else:
-        print("Statistics data not found.")
-
     try:
-        initial_price = INITIAL_PX_PRICE
-        current_price = float(coinmarketcap)  # Ensure this variable is defined
-        loss_percentage_initial = calculate_loss_percentage(initial_price, current_price)
-        loss_percentage_secondary = calculate_loss_percentage(SECONDARY_PX_PRICE, current_price)
+        # Fetch data
+        px_response = requests.get("https://coinmarketcap.com/currencies/not-pixel/", timeout=10)
+        ton_response = requests.get("https://coinmarketcap.com/currencies/toncoin/", timeout=10)
 
-        formatted_px = format_price(current_price, "px")
-        formatted_ton = format_price(float(x), "ton")  
+        if px_response.status_code != 200 or ton_response.status_code != 200:
+            print("Failed to retrieve data")
+            time.sleep(60)
+            continue
 
-        # Format the message with proper spacing and digits
+        # Get current prices
+        px_price = get_coin_price(px_response.text)
+        ton_price = get_coin_price(ton_response.text)
+
+        if px_price is None or ton_price is None:
+            print("Couldn't extract prices from the responses")
+            time.sleep(60)
+            continue
+
+        # Calculate loss percentages
+        loss_initial = calculate_loss_percentage(INITIAL_PX_PRICE, px_price)
+        loss_secondary = calculate_loss_percentage(SECONDARY_PX_PRICE, px_price)
+
+        # Format the message
         message_text = f"""
-$PX {formatted_px}$ 
-From 0.3$ = -{loss_percentage_initial:.2f}% / From 0.2$ = -{loss_percentage_secondary:.2f}%
+$PX *{format_price(px_price, "px")}$*
+From 0.3$ = -{loss_initial:.2f}% 
+From 0.2$ = -{loss_secondary:.2f}%
 
-$TON {formatted_ton}$
+$TON *{format_price(ton_price, "ton")}$*
 """
 
-        # Send the message at the 53rd second of the minute
+        # Send at the 53rd second
         send_message_at_53rd_second()
 
-        # Send the message to the Telegram channel
+        # Send to Telegram
         bot.send_message(chat_id=chat_id, text=message_text, parse_mode="Markdown")
 
-    except NameError:
-        print("One or more coin prices not found yet.")
     except Exception as e:
         print(f"An error occurred: {e}")
 
-    time.sleep(1)  # Wait for 1 second before the next iteration
+    time.sleep(1)
